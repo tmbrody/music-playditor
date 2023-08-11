@@ -1,1 +1,1 @@
-# music-playditor
+This program will let you listen to music from a playlist while also giving you some options to modify an audio file and save all of the changes to a new audio file.
