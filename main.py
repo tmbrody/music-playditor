@@ -1,9 +1,11 @@
 import tkinter as tk
-from tkinter import Canvas, filedialog, BOTH
+from tkinter import Canvas, filedialog, ttk, BOTH
 import os
 import pygame
 import configparser
 import random
+from mutagen.mp3 import MP3
+from mutagen.wave import WAVE
 
 pygame.init()
 
@@ -30,18 +32,22 @@ class MusicPlayerWindow:
         self.__file_list = None
         self.__directory = None
         self.__starting = True
+
+        self.__current_position = 0
+        self.__total_duration = 0
+        self.__clicking_slider = False
         self.__play_state = {"paused": True,
                              "repeating": False,
                              "shuffle": False}
 
         self.__options_frame = tk.Frame(self.__root)
-        self.__options_frame.pack(fill=tk.BOTH, expand=True)
+        self.__options_frame.pack(fill=BOTH, expand=True)
 
         self.__load_button = HoverButton(self.__options_frame, text="Load", command=self.load_files, relief="flat")
         self.__load_button.pack(side=tk.LEFT, anchor=tk.NW)
 
-        self.__edit_button = HoverButton(self.__options_frame, text="Edit", relief="flat")
-        self.__edit_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 900))
+        self.__edit_button = HoverButton(self.__options_frame, text="Edit", command=self.load_files, relief="flat")
+        self.__edit_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 100))
 
         self.__shuffle_button = HoverButton(self.__options_frame, image=self.no_shuffle_button, relief="flat", 
                                             command=lambda: self.toggle_playback(self.__shuffle_button, self.no_shuffle_button, self.shuffle_button, "shuffle"))
@@ -62,7 +68,14 @@ class MusicPlayerWindow:
 
         self.__repeat_button = HoverButton(self.__options_frame, image=self.no_repeat_button, relief="flat", 
                                             command=lambda: self.toggle_playback(self.__repeat_button, self.no_repeat_button, self.repeat_one_button, "repeating"))
-        self.__repeat_button.pack(side=tk.LEFT, anchor=tk.NW)
+        self.__repeat_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 200))
+
+        self.__audio_duration_slider = ttk.Scale(self.__options_frame, from_=0, to=100, orient="horizontal", length=550)
+        self.__audio_duration_slider.pack(side=tk.LEFT, anchor=tk.NW, fill=BOTH, expand=True)
+        self.__audio_duration_slider.bind("<Button-1>", lambda event: self.on_slider_click(event))
+
+        self.__audio_duration_label = tk.Label(self.__options_frame, text="--:--/--:--")
+        self.__audio_duration_label.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 20))
 
 
         self.__listbox_frame = tk.Frame(self.__root)
@@ -112,8 +125,13 @@ class MusicPlayerWindow:
                 self.__file_listbox.itemconfigure(index, background=bg_color)
 
     def pause_play_track(self, button, button_icon1, button_icon2, bool, event=None):
+        if self.__root.title() == "Music Playditor" and self.__last_played_file:
+            self.__root.title(f"Music Playditor - {self.__last_played_file}")
+            self.play_file(self.__last_played_file)
+
         if self.__play_state[bool]:
             pygame.mixer.music.unpause()
+            self.track_audio_duration(self.__last_played_file)
         else:
             pygame.mixer.music.pause()
 
@@ -124,29 +142,6 @@ class MusicPlayerWindow:
         current_image = button.cget("image")
         new_image = button_icon2 if str(current_image) == str(button_icon1) else button_icon1
         button.config(image=new_image)
-
-    def load_files(self):
-        if not self.__last_directory or not self.__starting:
-            self.__directory = filedialog.askdirectory(initialdir=self.__last_directory)
-        else:
-            self.__directory = self.__last_directory
-
-        if self.__directory:
-            self.__last_directory = self.__directory
-
-            if not self.__config.has_section("Settings"):
-                self.__config.add_section("Settings")
-
-            self.__config.set("Settings", "last_directory", self.__last_directory)
-            with open("config.ini", "w", encoding="utf-8") as configfile:
-                self.__config.write(configfile)
-            
-            self.__file_listbox.delete(0, tk.END)
-            self.__file_list = os.listdir(self.__directory)
-
-        if self.__file_list:
-            for file_name in self.__file_list:
-                self.__file_listbox.insert(tk.END, file_name)
 
     def check_audio_finished(self):
         for event in pygame.event.get():
@@ -173,8 +168,10 @@ class MusicPlayerWindow:
                     self.__config.write(configfile)
 
     def play_file(self, file):
+        self.__current_position = 0
         pygame.mixer.music.load(os.path.join(self.__directory, file))
         pygame.mixer.music.play()
+        self.track_audio_duration(file)
 
     def play_next(self, event=None):
         if self.__current_index is not None:
@@ -204,6 +201,87 @@ class MusicPlayerWindow:
             self.__current_index = index
             self.__file_listbox.select_set(index)
             self.__starting = False
+
+    def update_audio_slider_and_label(self):
+            full_time = self.get_total_audio_duration(self.__last_played_file)
+
+            current_position = self.__current_position
+            self.__current_position += 0.1
+
+            current_minutes = int(current_position // 60)
+            current_seconds = int(current_position % 60)
+            current_time = f"{current_minutes:02d}:{current_seconds:02d}"
+
+            self.__audio_duration_slider.set(current_position)
+            
+            self.__audio_duration_label.configure(text=f"{current_time}/{full_time}")
+
+    def track_audio_duration(self, file):
+        if pygame.mixer.music.get_busy():
+            if self.__clicking_slider:
+                pygame.mixer.music.set_pos((self.__current_position))
+                self.__clicking_slider = False
+
+            self.update_audio_slider_and_label()
+
+            self.__root.after(100, self.track_audio_duration, file)
+
+    def get_total_audio_duration(self, file):
+        file_extension_index = file.rfind(".")
+        file_extension = file[file_extension_index+1:]
+        if file_extension == "mp3":
+            audio = MP3(os.path.join(self.__directory, file))
+        else:
+            audio = WAVE(os.path.join(self.__directory, file))
+        full_duration = audio.info.length
+        full_minutes = int(full_duration // 60)
+        full_seconds = int(full_duration % 60)
+        full_time = f"{full_minutes:02d}:{full_seconds:02d}"
+
+        self.__audio_duration_slider.configure(to=int(full_duration))
+
+        self.__total_duration = full_duration
+
+        return full_time
+
+    def on_slider_click(self, event):
+        self.__clicking_slider = True
+        click_position = event.x
+        total_duration = self.__total_duration
+        desired_position = (click_position / self.__audio_duration_slider.winfo_width()) * total_duration
+        self.__current_position = int(desired_position)
+
+        self.update_audio_slider_and_label()
+
+    def load_files(self):
+        if not self.__last_directory or not self.__starting:
+            self.__directory = filedialog.askdirectory(initialdir=self.__last_directory)
+        else:
+            self.__directory = self.__last_directory
+
+        if self.__directory:
+            self.__last_directory = self.__directory
+
+            if not self.__config.has_section("Settings"):
+                self.__config.add_section("Settings")
+
+            self.__config.set("Settings", "last_directory", self.__last_directory)
+            with open("config.ini", "w", encoding="utf-8") as configfile:
+                self.__config.write(configfile)
+            
+            self.__file_listbox.delete(0, tk.END)
+            self.__file_list = os.listdir(self.__directory)
+
+        if self.__file_list:
+            for file_name in self.__file_list:
+                self.__file_listbox.insert(tk.END, file_name)
+
+            for index in range(len(self.__file_list)):
+                if index % 2 == 0:
+                    bg_color = "white"
+                else:
+                    bg_color = "light gray"
+                self.__file_listbox.itemconfigure(index, background=bg_color)
 
     def close(self):
         if self.__config.has_section("Settings"):
