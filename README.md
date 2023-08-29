@@ -1,1 +1,1 @@
-This program will let you listen to music from a playlist while also giving you some options to modify an audio file and save all of the changes to a new audio file.
+This is a basic music player that copies the layout I use for Foobar2000. It also has an edit button that opens up Audacity with the file you're listening to in case you want to quickly fix some errors in an audio file before listening to the next one. All of the small icons used in this program came from [icons8.com](https://icons8.com/icons).

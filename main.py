@@ -1,16 +1,17 @@
 import tkinter as tk
-from tkinter import Canvas, filedialog, ttk, BOTH
+from tkinter import Canvas, filedialog, ttk, messagebox, BOTH
 import os
-import pygame
 import configparser
 import random
+import pygame
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
+import subprocess
 
 pygame.init()
 
 class MusicPlayerWindow:
-    def __init__(self, root, width=1920, height=1080):
+    def __init__(self, root):
         self.play_button = tk.PhotoImage(file="icons/play.png")
         self.pause_button = tk.PhotoImage(file="icons/pause.png")
         self.next_track_button = tk.PhotoImage(file="icons/next_track.png")
@@ -20,11 +21,24 @@ class MusicPlayerWindow:
         self.repeat_all_button = tk.PhotoImage(file="icons/repeat_all.png")
         self.repeat_one_button = tk.PhotoImage(file="icons/repeat_one.png")
         self.no_repeat_button = tk.PhotoImage(file="icons/no_repeat.png")
+        self.volume_button = tk.PhotoImage(file="icons/volume.png")
+        self.volume_mute_button = tk.PhotoImage(file="icons/volume_mute.png")
+
+        self.__config = configparser.ConfigParser()
+        self.__config.read("config.ini", encoding="utf-8")
+
+        if self.__config.has_option("Settings", "width") and self.__config.has_option("Settings", "height"):
+            width = int(self.__config.get("Settings", "width"))
+            height = int(self.__config.get("Settings", "height"))
+        else:
+            width = 1280
+            height = 720
     
         self.__width = width
         self.__height = height
         self.__root = root
         self.__root.title("Music Playditor")
+        self.__root.geometry(f"{self.__width}x{self.__height}")
 
         self.__last_directory = None
         self.__current_index = None
@@ -32,10 +46,12 @@ class MusicPlayerWindow:
         self.__file_list = None
         self.__directory = None
         self.__starting = True
+        self.__clicking_slider = False
 
         self.__current_position = 0
         self.__total_duration = 0
-        self.__clicking_slider = False
+        self.__audio_tracking_id = 0
+        self.__volume = 1
         self.__play_state = {"paused": True,
                              "repeating": False,
                              "shuffle": False}
@@ -46,7 +62,7 @@ class MusicPlayerWindow:
         self.__load_button = HoverButton(self.__options_frame, text="Load", command=self.load_files, relief="flat")
         self.__load_button.pack(side=tk.LEFT, anchor=tk.NW)
 
-        self.__edit_button = HoverButton(self.__options_frame, text="Edit", command=self.load_files, relief="flat")
+        self.__edit_button = HoverButton(self.__options_frame, text="Edit", command=self.edit_files, relief="flat")
         self.__edit_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 100))
 
         self.__shuffle_button = HoverButton(self.__options_frame, image=self.no_shuffle_button, relief="flat", 
@@ -68,9 +84,18 @@ class MusicPlayerWindow:
 
         self.__repeat_button = HoverButton(self.__options_frame, image=self.no_repeat_button, relief="flat", 
                                             command=lambda: self.toggle_playback(self.__repeat_button, self.no_repeat_button, self.repeat_one_button, "repeating"))
-        self.__repeat_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 200))
+        self.__repeat_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 50))
 
-        self.__audio_duration_slider = ttk.Scale(self.__options_frame, from_=0, to=100, orient="horizontal", length=550)
+        self.__volume_slider = ttk.Scale(self.__options_frame, from_=0.0, to=1.0, orient="horizontal") 
+        self.__volume_slider.pack(side=tk.LEFT, anchor=tk.NW)
+        self.__volume_slider.bind("<ButtonRelease-1>", lambda event: self.set_volume(event))
+        self.__volume_slider.set(self.__volume)
+
+        self.__volume_button = HoverButton(self.__options_frame, image=self.volume_button, command=self.mute_unmute_volume, relief="flat")
+        self.__volume_button.pack(side=tk.LEFT, anchor=tk.NW, padx=(0, 50))
+        self.__volume_button.bind("<m>", self.mute_unmute_volume)
+
+        self.__audio_duration_slider = ttk.Scale(self.__options_frame, from_=0, to=100, orient="horizontal")
         self.__audio_duration_slider.pack(side=tk.LEFT, anchor=tk.NW, fill=BOTH, expand=True)
         self.__audio_duration_slider.bind("<Button-1>", lambda event: self.on_slider_click(event))
 
@@ -81,12 +106,12 @@ class MusicPlayerWindow:
         self.__listbox_frame = tk.Frame(self.__root)
         self.__listbox_frame.pack(fill=BOTH, expand=True)
 
-        self.__file_listbox = tk.Listbox(self.__listbox_frame, background="SystemButtonFace", width=int(self.__width * 0.17) , height=self.__height)
-        self.__file_listbox.pack(side=tk.LEFT)
+        self.__file_listbox = tk.Listbox(self.__listbox_frame, background="SystemButtonFace", height=self.__height)
+        self.__file_listbox.pack(side=tk.LEFT, anchor=tk.S, fill=BOTH, expand=True, pady=(0, 10))
         self.__file_listbox.bind("<Double-Button-1>", self.play_selected_file)
 
         self.__listbox_scrollbar = tk.Scrollbar(self.__listbox_frame, orient=tk.VERTICAL, command=self.__file_listbox.yview)
-        self.__listbox_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.__listbox_scrollbar.pack(side=tk.LEFT, anchor=tk.W, fill=tk.Y)
         self.__file_listbox.config(yscrollcommand=self.__listbox_scrollbar.set)
 
 
@@ -94,14 +119,11 @@ class MusicPlayerWindow:
         self.__canvas.pack()
         self.__root.protocol("WM_DELETE_WINDOW", self.close)
 
-        self.__config = configparser.ConfigParser()
-        self.__config.read("config.ini", encoding="utf-8")
-
         self.__audio_finished_event = pygame.USEREVENT + 1
 
         pygame.mixer.music.set_endevent(self.__audio_finished_event)
 
-        if self.__config.has_section("Settings") and self.__config.has_option("Settings", "last_directory"):
+        if self.__config.has_option("Settings", "last_directory"):
             self.__last_directory = self.__config.get("Settings", "last_directory")
             self.__last_played_file = self.__config.get("Settings", "last_played_file", fallback="")
             self.load_files()
@@ -110,24 +132,27 @@ class MusicPlayerWindow:
                 self.__file_listbox.select_set(index)
                 self.play_file_at_index(index)
 
-        self.__root.after(100, self.check_audio_finished)
-
         if self.__config.has_option("Settings", "scrollbar_position"):
             scrollbar_position = float(self.__config.get("Settings", "scrollbar_position"))
             self.__file_listbox.yview_moveto(scrollbar_position)
 
         if self.__file_list:
-            for index in range(len(self.__file_list)):
-                if index % 2 == 0:
-                    bg_color = "white"
-                else:
-                    bg_color = "light gray"
-                self.__file_listbox.itemconfigure(index, background=bg_color)
+            self.configure_file_list()
+
+        self.__root.after(100, self.check_audio_finished)
+
+    def configure_file_list(self):
+        for index in range(len(self.__file_list)):
+            if index % 2 == 0:
+                bg_color = "#072a47"
+            else:
+                bg_color = "#012440"
+            self.__file_listbox.itemconfigure(index, foreground="light gray", background=bg_color)
 
     def pause_play_track(self, button, button_icon1, button_icon2, bool, event=None):
         if self.__root.title() == "Music Playditor" and self.__last_played_file:
-            self.__root.title(f"Music Playditor - {self.__last_played_file}")
             self.play_file(self.__last_played_file)
+            self.__root.title(f"Music Playditor - {self.__last_played_file}")
 
         if self.__play_state[bool]:
             pygame.mixer.music.unpause()
@@ -136,6 +161,10 @@ class MusicPlayerWindow:
             pygame.mixer.music.pause()
 
         self.toggle_playback(button, button_icon1, button_icon2, bool)
+
+        if self.__current_index:
+            self.__file_listbox.selection_clear(0, tk.END)
+            self.__file_listbox.select_set(self.__current_index)
 
     def toggle_playback(self, button, button_icon1, button_icon2, bool, event=None):
         self.__play_state[bool] = not self.__play_state[bool]
@@ -146,7 +175,7 @@ class MusicPlayerWindow:
     def check_audio_finished(self):
         for event in pygame.event.get():
             if event.type == self.__audio_finished_event:
-                self.play_next(None)
+                self.play_next()
         self.__root.after(100, self.check_audio_finished)
 
     def play_selected_file(self, event=None):
@@ -156,11 +185,16 @@ class MusicPlayerWindow:
 
         selected_index = self.__file_listbox.curselection()
         self.__current_index = selected_index[0]
+
         if selected_index:
             selected_file = self.__file_list[selected_index[0]]
             if selected_file.lower().endswith(('.mp3', '.wav')):
                 self.__root.title(f"Music Playditor - {selected_file}")
                 self.__last_played_file = selected_file
+
+                if self.__audio_tracking_id:
+                    self.__root.after_cancel(self.__audio_tracking_id)
+
                 self.play_file(selected_file)
 
                 self.__config.set("Settings", "last_played_file", self.__last_played_file)
@@ -169,9 +203,15 @@ class MusicPlayerWindow:
 
     def play_file(self, file):
         self.__current_position = 0
-        pygame.mixer.music.load(os.path.join(self.__directory, file))
-        pygame.mixer.music.play()
-        self.track_audio_duration(file)
+
+        if self.__root.title() == "Music Playditor" and self.__last_played_file:
+            self.track_audio_duration(file)
+            pygame.mixer.music.load(os.path.join(self.__directory, file))
+            pygame.mixer.music.play()
+        else:
+            pygame.mixer.music.load(os.path.join(self.__directory, file))
+            pygame.mixer.music.play()
+            self.track_audio_duration(file)
 
     def play_next(self, event=None):
         if self.__current_index is not None:
@@ -183,10 +223,13 @@ class MusicPlayerWindow:
                 next_index = (self.__current_index + increase_by) % len(self.__file_list)
                 self.__root.title(f"Music Playditor - {self.__file_list[next_index]}")
 
-                self.__file_listbox.selection_clear(0, tk.END)
-                self.play_file_at_index(next_index)
-
                 self.__last_played_file = self.__file_list[next_index]
+                self.__file_listbox.select_set(next_index)
+
+                self.__file_listbox.selection_clear(0, tk.END)
+
+                self.__root.after_cancel(self.__audio_tracking_id)
+                self.play_file_at_index(next_index)
 
                 self.__file_listbox.see(next_index)
             else:
@@ -194,9 +237,9 @@ class MusicPlayerWindow:
 
     def play_file_at_index(self, index):
         if index < len(self.__file_list) and not self.__starting:
-            self.play_file(self.__file_list[index])
             self.__current_index = index
             self.__file_listbox.select_set(index)
+            self.play_file(self.__file_list[index])
         else:
             self.__current_index = index
             self.__file_listbox.select_set(index)
@@ -224,7 +267,7 @@ class MusicPlayerWindow:
 
             self.update_audio_slider_and_label()
 
-            self.__root.after(100, self.track_audio_duration, file)
+            self.__audio_tracking_id = self.__root.after(100, self.track_audio_duration, file)
 
     def get_total_audio_duration(self, file):
         file_extension_index = file.rfind(".")
@@ -253,6 +296,25 @@ class MusicPlayerWindow:
 
         self.update_audio_slider_and_label()
 
+    def mute_unmute_volume(self):
+        if pygame.mixer.music.get_volume():
+            self.__volume_button.config(image=self.volume_mute_button)
+            pygame.mixer.music.set_volume(0)
+        else:
+            self.__volume_button.config(image=self.volume_button)
+            pygame.mixer.music.set_volume(self.__volume)
+
+    def set_volume(self, event):
+        click_position = event.x
+        desired_position = click_position / self.__volume_slider.winfo_width()
+        
+        desired_position = max(0, min(desired_position, 1))
+
+        self.__volume = desired_position
+
+        self.__volume_slider.set(desired_position)
+        pygame.mixer.music.set_volume(desired_position)
+
     def load_files(self):
         if not self.__last_directory or not self.__starting:
             self.__directory = filedialog.askdirectory(initialdir=self.__last_directory)
@@ -275,17 +337,25 @@ class MusicPlayerWindow:
         if self.__file_list:
             for file_name in self.__file_list:
                 self.__file_listbox.insert(tk.END, file_name)
+            self.configure_file_list()
 
-            for index in range(len(self.__file_list)):
-                if index % 2 == 0:
-                    bg_color = "white"
-                else:
-                    bg_color = "light gray"
-                self.__file_listbox.itemconfigure(index, background=bg_color)
+    def edit_files(self):
+        pygame.mixer.music.pause()
+        
+        audio_file_path = f"{self.__last_directory}/{self.__last_played_file}"
+
+        try:
+            command = ["audacity", audio_file_path]
+            subprocess.check_call(command, shell=True)
+        except subprocess.CalledProcessError:
+            messagebox.showerror("Error", "Audacity is not installed on your system. Please install Audacity to edit audio files.")
 
     def close(self):
-        if self.__config.has_section("Settings"):
+        if self.__config.has_option("Settings", "last_played_file"):
             scrollbar_position = self.__listbox_scrollbar.get()[0]
+            
+            self.__config.set("Settings", "width", str(self.__root.winfo_width()))
+            self.__config.set("Settings", "height", str(self.__root.winfo_height()))
             self.__config.set("Settings", "scrollbar_position", str(scrollbar_position))
             self.__config.set("Settings", "last_played_file", self.__last_played_file)
 
