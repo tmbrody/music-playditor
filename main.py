@@ -417,6 +417,10 @@ class MusicPlayerWindow:
             self.configure_file_list()
 
     def edit_files(self):
+        self.__play_button.config(image=self.play_button)
+        self.__play_state["paused"] = True
+        self.__channel_one.pause()
+        self.__channel_two.pause()
         pygame.mixer.music.pause()
         
         audio_file_path = f"{self.__last_directory}/{self.__last_played_file}"
