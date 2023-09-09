@@ -59,6 +59,10 @@ class MusicPlayerWindow:
         self.__channel_one = pygame.mixer.Channel(0)
         self.__channel_two = pygame.mixer.Channel(1)
 
+        self.__shuffled_files_index = -1
+        self.__current_shuffled_index = 0
+        self.__shuffled_files_list = []
+
         self.__current_position = 0
         self.__total_duration = 0
         self.__audio_tracking_id = 0
@@ -81,9 +85,9 @@ class MusicPlayerWindow:
                                             command=lambda: self.toggle_playback(self.__shuffle_button, self.no_shuffle_button, self.shuffle_button, "shuffle"))
         self.__shuffle_button.pack(side=tk.LEFT, anchor=tk.NW)
 
-        self.__previous_track_button = HoverButton(self.__options_frame, image=self.previous_track_button, relief="flat", command=self.play_selected_file)
+        self.__previous_track_button = HoverButton(self.__options_frame, image=self.previous_track_button, relief="flat", command=self.play_previous)
         self.__previous_track_button.pack(side=tk.LEFT, anchor=tk.NW)
-        self.__root.bind("<p>", self.play_selected_file)
+        self.__root.bind("<p>", self.play_previous)
 
         self.__play_button = HoverButton(self.__options_frame, image=self.play_button, relief="flat", 
                                          command=lambda: self.pause_play_track(self.__play_button, self.pause_button, self.play_button, "paused"))
@@ -195,7 +199,10 @@ class MusicPlayerWindow:
 
         if self.__current_index:
             self.__file_listbox.selection_clear(0, tk.END)
-            self.__file_listbox.select_set(self.__current_index)
+            if self.__current_shuffled_index:
+                self.__file_listbox.select_set(self.__current_shuffled_index)
+            else:
+                self.__file_listbox.select_set(self.__current_index)
 
     def toggle_playback(self, button, button_icon1, button_icon2, bool, event=None):
         self.__play_state[bool] = not self.__play_state[bool]
@@ -205,7 +212,7 @@ class MusicPlayerWindow:
 
     def check_audio_finished(self):
         for event in pygame.event.get():
-            if event.type == self.__audio_finished_event:
+            if event.type == self.__audio_finished_event and (self.__total_duration - self.__current_position) < 4:
                 self.play_next()
         self.__root.after(100, self.check_audio_finished)
 
@@ -261,31 +268,88 @@ class MusicPlayerWindow:
                 self.track_audio_duration(self.__channel_one)
 
                 self.__channel_one.set_endevent(0)
+ 
+    def play_previous(self, event=None):
+        self.__play_button.config(image=self.pause_button)
+        if self.__play_state["paused"]:
+            self.__play_state["paused"] = not self.__play_state["paused"]
 
-    def play_next(self, event=None):
-        if self.__current_index:
-            if not self.__play_state["repeating"]:
-                increase_by = 1
-                if self.__play_state["shuffle"]:
-                    increase_by = random.randint(1, len(self.__file_list) - 1)
+        if self.__current_position < 3:
+            if self.__shuffled_files_list:
+                try:
+                    self.__shuffled_files_index -= 1
 
-                next_index = (self.__current_index + increase_by) % len(self.__file_list)
+                    self.__current_shuffled_index = self.__shuffled_files_list[self.__shuffled_files_index]
+                except IndexError:
+                    self.__shuffled_files_index = -1
+                    self.__current_shuffled_index = self.__shuffled_files_list[self.__shuffled_files_index]
+
+                self.__file_listbox.selection_clear(0, tk.END)
                 
-                self.__root.title(f"Music Playditor - {self.__file_list[next_index]}")
-
-                self.__last_played_file = self.__file_list[next_index]
-                self.__file_listbox.select_set(next_index)
+                self.__last_played_file = self.__file_list[self.__current_shuffled_index]
+                self.__file_listbox.select_set(self.__current_shuffled_index)
+                self.__file_listbox.see(self.__current_shuffled_index)
+                self.__root.title(f"Music Playditor - {self.__last_played_file}")
+            else:
+                self.__current_index -= 1
+                previous_position = self.__current_index
 
                 self.__file_listbox.selection_clear(0, tk.END)
 
-                if self.__audio_tracking_id:
-                    self.__root.after_cancel(self.__audio_tracking_id)
+                self.__last_played_file = self.__file_list[previous_position]
+                self.__file_listbox.select_set(previous_position)
+                self.__file_listbox.see(previous_position)
+                self.__root.title(f"Music Playditor - {self.__last_played_file}")
 
-                self.play_file_at_index(next_index)
+        self.play_file(self.__last_played_file)
 
-                self.__file_listbox.see(next_index)
-            else:
-                self.play_file_at_index(self.__current_index)
+    def play_next(self, event=None):
+        self.__play_button.config(image=self.pause_button)
+        if self.__play_state["paused"]:
+            self.__play_state["paused"] = not self.__play_state["paused"]
+
+        if not self.__play_state["shuffle"] and self.__current_shuffled_index:
+            self.__current_index = self.__current_shuffled_index
+            self.__current_shuffled_index = 0
+            self.__shuffled_files_index = -1
+
+        if self.__shuffled_files_index != -1:
+            self.__current_shuffled_index = self.__shuffled_files_list[self.__shuffled_files_index + 1]
+            self.__shuffled_files_index += 1
+
+            self.__last_played_file = self.__file_list[self.__current_shuffled_index]
+
+            self.play_file(self.__last_played_file)
+        else:
+            if self.__current_index:
+                if not self.__play_state["repeating"]:
+                    increase_by = 1
+                    if self.__play_state["shuffle"]:
+                        increase_by = random.randint(1, len(self.__file_list) - 1)
+
+                    next_index = (self.__current_index + increase_by) % len(self.__file_list)
+
+                    self.__last_played_file = self.__file_list[next_index]
+                    self.__file_listbox.select_set(next_index)
+
+                    self.__root.title(f"Music Playditor - {self.__file_list[next_index]}")
+
+                    if increase_by != 1:
+                        self.__current_shuffled_index = next_index
+                        self.__shuffled_files_list.append(self.__current_shuffled_index)
+                    else:
+                        self.__shuffled_files_list = []
+
+                    self.__file_listbox.selection_clear(0, tk.END)
+
+                    if self.__audio_tracking_id:
+                        self.__root.after_cancel(self.__audio_tracking_id)
+
+                    self.play_file_at_index(next_index)
+
+                    self.__file_listbox.see(next_index)
+                else:
+                    self.play_file_at_index(self.__current_index)
 
     def play_file_at_index(self, index):
         if index < len(self.__file_list) and not self.__starting:
